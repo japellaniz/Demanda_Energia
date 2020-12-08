@@ -19,6 +19,7 @@ library(corrplot)
 library(lubridate)
 library(Metrics)
 library(caret)
+library(patchwork)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -45,7 +46,6 @@ df1[,c(4,8,9,10,14,20)] <- NULL
 df_dates_na <- df1 %>% filter(is.na(df1[,c(2,3,4,5,6,7,8,9,10,11,12,13,14,15)])) %>% .$time
 df1 <- df1 %>%  filter(!is.na(df1[,c(2,3,4,5,6,7,8,9,10,11,12,13,14,15)]))
 
-
 # Asignación de la media a valores sueltos de NAs
 df1[6][is.na(df1[6])] =  colMeans(df1[6], na.rm = TRUE)
 df1[7][is.na(df1[7])] =  colMeans(df1[7], na.rm = TRUE)
@@ -63,6 +63,7 @@ levels(df2$weather_description)
 levels(df2$weather_icon)
 # Borramos las filas eliminadas en df1
 df2 <- df2[!df2$dt_iso %in% df_dates_na,]
+rm(df_dates_na)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 summary(df1)
@@ -80,9 +81,9 @@ par(mfrow=c(3,1))
 plot(df1$`generation hydro pumped storage consumption`,col="gray50",alpha=0.3)
 plot(df1$`generation solar`,col="gray50",alpha=0.3)
 plot(df1$`forecast solar day ahead`,col="gray50",alpha=0.3)
+rm(prof_df1,df1_m)
 # No apreciamos outliers claros así que ni eliminamos ni imputamos.
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
 
 # Análisis de outliers en df2+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 # Obtenemos indicadores estadísticos de las variables
@@ -94,7 +95,6 @@ df2_m_rain <- df2 %>% select(c(10,11,12)) %>% reshape2::melt()
 
 plotar(df2_m_pres,  target= "variable", input = "value", plot_type = "boxplot")
 plotar(df2_m_rain,  target= "variable", input = "value", plot_type = "boxplot")
-
 # De la inspección visual de las variables, de las gráficas de boxplot y del conocimiento de
 # las variables concluímos que únicamente hay valores extraños en la variable presión (algunos 
 # ceros y valores exageradamente altos para presión atmosférica) ya que las cifras altas 
@@ -107,6 +107,7 @@ df2[6][is.na(df2[6])] =  colMeans(df2[6], na.rm = TRUE)
 # Vemos como queda:
 df2_m_pres <- df2 %>% select(6) %>% reshape2::melt()
 plotar(df2_m_pres,  target= "variable", input = "value", plot_type = "boxplot")
+rm(prof_df2, df2_m_pres, df2_m_rain)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -117,8 +118,6 @@ plot_num(df1[,-1], bins = 20)
 plot_num(df2[,-1], bins = 20)
 
 # Análisis de datos de demanda de energía y precio.
-# # Datos solo del 2018.
-# df11 <- df1[year(df1$time)== 2018,]
 
 # Comparativa de demanda energética +++++++++++++++++++++++++++++++++++++++++++++++++
 df1 %>% ggplot(aes(x=time)) +
@@ -175,7 +174,7 @@ df12g %>% ggplot(aes(x=dia, y=value, fill =variable, col =variable)) +
   theme(legend.position = "bottom")+
   scale_x_continuous(breaks = c(1,2,3,4,5,6,7),labels = c("L","M","Mi","J","V","S","D"))
 
-
+rm(df12,df12g)
 # Se aprecia que no hay apenas diferencia entre la demanda y la predicción de TSO por lo que
 # nos vamos a centrar en la predicción del precio.
 
@@ -229,9 +228,8 @@ df21 <- df2 %>% select(1,3:13) %>%
             snow_3h = mean(snow_3h),
             clouds_all = mean(clouds_all))
   
-
+rm(df2)
 # Ahora podemos juntar las 2 tablas
-# df21 <- df21[year(df21$time)== 2018,]
 data <- df1 %>% inner_join(df21,by="time")
 
 # Variables más correlacionadas con las variables objetivo
@@ -245,6 +243,46 @@ str(data)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 # Preparación para el modelo predicitivo ####
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Analisis de relación entre la variable objetivo y el resto de variables buscando dependencias.
+{
+p1 <- ggplot(data = data) +geom_smooth(aes(x = time,y = `price actual`))
+p2 <- ggplot(data = data) +geom_smooth(aes(x = `generation biomass`,y = `price actual`))
+p3 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil brown coal/lignite`,y = `price actual`))
+p4 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil gas`,y = `price actual`))
+p5 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil hard coal`,y = `price actual`))
+p6 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil oil`,y = `price actual`))
+p7 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro pumped storage consumption`,y = `price actual`))
+p8 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro run-of-river and poundage`,y = `price actual`))
+p9 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro water reservoir`,y = `price actual`))
+p10 <- ggplot(data = data) +geom_smooth(aes(x = `generation nuclear`,y = `price actual`))
+p11 <- ggplot(data = data) +geom_smooth(aes(x = `generation other`,y = `price actual`))
+p12 <- ggplot(data = data) +geom_smooth(aes(x = `generation other renewable`,y = `price actual`))
+p13 <- ggplot(data = data) +geom_smooth(aes(x = `generation solar`,y = `price actual`))
+p14 <- ggplot(data = data) +geom_smooth(aes(x = `generation waste`,y = `price actual`))
+p15 <- ggplot(data = data) +geom_smooth(aes(x = `generation wind onshore`,y = `price actual`))
+p16 <- ggplot(data = data) +geom_smooth(aes(x = `forecast solar day ahead`,y = `price actual`))
+p17 <- ggplot(data = data) +geom_smooth(aes(x = `forecast wind onshore day ahead`,y = `price actual`))
+p18 <- ggplot(data = data) +geom_smooth(aes(x = `total load forecast`,y = `price actual`))
+p19 <- ggplot(data = data) +geom_smooth(aes(x = `total load actual`,y = `price actual`))
+p20 <- ggplot(data = data) +geom_smooth(aes(x = `price day ahead`,y = `price actual`))
+p21 <- ggplot(data = data) +geom_smooth(aes(x = `temp`,y = `price actual`))
+p22 <- ggplot(data = data) +geom_smooth(aes(x = `temp_min`,y = `price actual`))
+p23 <- ggplot(data = data) +geom_smooth(aes(x = `temp_max`,y = `price actual`))
+p24 <- ggplot(data = data) +geom_smooth(aes(x = `pressure`,y = `price actual`))
+p25 <- ggplot(data = data) +geom_smooth(aes(x = `humidity`,y = `price actual`))
+p26 <- ggplot(data = data) +geom_smooth(aes(x = `wind_speed`,y = `price actual`))
+p27 <- ggplot(data = data) +geom_smooth(aes(x = `wind_deg`,y = `price actual`))
+p28 <- ggplot(data = data) +geom_smooth(aes(x = `rain_1h`,y = `price actual`))
+p29 <- ggplot(data = data) +geom_smooth(aes(x = `rain_3h`,y = `price actual`))
+p30 <- ggplot(data = data) +geom_smooth(aes(x = `snow_3h`,y = `price actual`))
+p31 <- ggplot(data = data) +geom_smooth(aes(x = `clouds_all`,y = `price actual`))
+}
+
+p1+p2+p3+p4+p5+p6+p7+p8+p9+p10+p11+p12+p13+p14+p15+p16
+p17+p18+p19+p20+p21+p22+p23+p24+p25+p26+p27+p28+p29+p30+p31
+
+rm(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15,p16,
+   p17,p18,p19,p20,p21,p22,p23,p24,p25,p26,p27,p28,p29,p30,p31)
 # Importancia de variables con Random Forest++++++++++++++++++++++++++++++++++++++++++++++++
 # Ejecutamos Random Forest para ver cuáles son las variables explicativas más importantes.
 library(randomForest)
@@ -269,6 +307,8 @@ ggplot(random_forest[1:30,], aes(x=reorder(Variables, -MSE), y=MSE, group=1)) +
   labs(x = "Variable", y= "MSE") + 
   labs(title = "MSE explanation evolution") + 
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+rm(random_forest,train_forest)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
@@ -293,23 +333,23 @@ cor.plot(correlations, numbers=TRUE, xlas = 2, upper= FALSE, main="Correlaciones
 # Cogemos "price day ahead"
 # "total load actual" con "total load forecast" (0,99). Cogemos "total load actual".
 # "generation wind onshore" con "generation wind onshore day ahead" (0,99). Cogemos "generation wind onshore".
+rm(correlations,df_cor,names)
 
 df <- data[,-c(3,5,11,17,18)]
 rmse(df$`price actual`,df$`price day ahead`)
 
-# Pendiente:
-# Las horas hay que ponerlas como dummy var ya que están como tipo date, no numérico.
-# Hay que hacer partición train-test (80-20) con la variable "price actual" como
-# target. Comprobar resultados con el dataset de test.
-
+# Ponemos las horas como dummy var para poder emplearlas en el modelo (pasarlas de tipo
+# date a tipo numérico)
 df_train <- df %>% mutate(hora = hour(time)) %>% 
   fastDummies::dummy_cols(select_columns = "hora") %>%
   select(-c("time", "hora"))
 
-# Separamos en train y test
+# Separamos en train y test (80-20) con la variable "price actual" como target.
 train <- createDataPartition(y = df_train$`price actual`, p = 0.8, list = FALSE, times = 1)
 datos_train <- df_train[train, ]
 datos_test  <- df_train[-train, ]
+
+rm(df_train,train)
 # Comprobamos la semejante distribución de la variable objetivo en los dataset de train y test.
 ggplot()+
   geom_density(data = datos_train, aes(x=`price actual`, fill = "Train"), alpha =0.5)+
@@ -319,6 +359,10 @@ ggplot()+
                                "Test" = "gray50"))+
   theme_bw() +
   theme(legend.position = "bottom")
+
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Modelado mediante regresión lineal ####
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # Primera prueba de entrenamiento de un modelo de regresión lineal
 modelo_lm <- train(`price actual` ~ ., method = "lm", data = datos_train)
@@ -366,3 +410,13 @@ ggplot() +
   labs(x = "Precio", title = "Precio actual vs predicción") +
   theme_bw() +
   theme(legend.position = "bottom")
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Análisis del modelo ####
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+par(mfrow=c(2,2)) 
+modelo_lm$finalModel$residuals
+plot( modelo_lm$finalModel$residuals ~ modelo_lm$finalModel$fitted.values)
+hist(modelo_lm$finalModel$residuals)
+qqnorm(modelo_lm$finalModel$residuals); qqline(modelo_lm$finalModel$residuals, col = 2,lwd=2,lty=2)
+shapiro.test(modelo_lm$finalModel$residuals)
