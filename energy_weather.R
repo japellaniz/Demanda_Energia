@@ -321,8 +321,17 @@ ggplot()+
   theme(legend.position = "bottom")
 
 # Primera prueba de entrenamiento de un modelo de regresión lineal
-modelo_glm <- train(`price actual` ~ ., method = "glm", data = datos_train)
-modelo_glm$resample %>% head(10)
+modelo_lm <- train(`price actual` ~ ., method = "lm", data = datos_train)
+modelo_lm$resample %>% head(10)
+summary(modelo_lm)
+
+# Eliminamos las variables no significativas para el modelo (p-valor > 0,05)
+datos_train <- datos_train[,-c(6,7,9,23,24,50)]
+
+# Segunda prueba de entrenamiento de un modelo de regresión lineal
+modelo_lm <- train(`price actual` ~ ., method = "lm", data = datos_train)
+modelo_lm$resample %>% head(10)
+summary(modelo_lm)
 
 # Utilizando resampling
 particiones  <- 10
@@ -339,6 +348,7 @@ modelo_lm <- train(`price actual` ~ ., data = datos_train,
                           metric = "RMSE",
                           trControl = control_train)
 modelo_lm
+summary(modelo_lm)
 modelo_lm$resample %>% head(10)
 summary(modelo_lm$resample$RMSE)
 
