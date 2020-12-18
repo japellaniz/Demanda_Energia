@@ -1,0 +1,558 @@
+---
+title: "Energía en España. Predicción horaria del precio."
+subtitle: "Proyecto fin de M3.2. Puesta en valor de Big Data. Programa en Big Data y Business Intelligence. Universidad de Deusto."
+author: 
+ - "José Luis Apellániz"
+ - "Estíbaliz Mtz. de Bujo"
+date: "19/12/2020"
+output: 
+  html_document:
+    code folding: show
+    highlight: haddock
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE, knitr.table.format = "html", cache=TRUE)
+```
+
+Tomado de competición Kaggle - Hourly energy demand generation and weather
+
+https://www.kaggle.com/nicholasjhana/energy-consumption-generation-prices-and-weather
+
+# Introducción.
+Este conjunto de datos contiene 4 años de consumo eléctrico, generación, precios y datos meteorológicos de España. Los datos de consumo y generación fueron recuperados del ENTSOE, un portal público de datos de los Operadores de Servicios de Transmisión (TSO). Los precios se obtuvieron del TSO español, Red Electrica de España. Los datos meteorológicos se compraron como parte de un proyecto personal de la API de Open Weather para las 5 ciudades más grandes de España y se hicieron públicos aquí.
+
+El conjunto de datos es único porque contiene datos horarios de consumo eléctrico y las respectivas previsiones del TSO sobre consumo y precios. Esto permite que los pronósticos prospectivos se comparen con los pronósticos actuales de vanguardia que se utilizan en la industria.
+
+La idea es predecir el día siguiente (las próximas 24 horas) de la demanda de energía en España utilizando la demanda pasada, los precios y los datos meteorológicos (velocidad/dirección del viento, temperatura, ubicación, lluvia, etc.), aunque, como veremos, será más interesante predecir los precios de la energía.
+
+```{r libraries, collapse=TRUE}
+# Carga de las librerías necesarias.
+library(readr)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(funModeling)
+library(corrplot)
+library(Metrics)
+library(caret)
+library(patchwork)
+library(randomForest)
+library(psych)
+library(ModelMetrics)
+library(ggpubr)
+```
+
+# Preprocesado de los datos.
+Hacemos la carga de los dos archivos disponibles de datos (energía y climatología), eliminamos columnas vacías, con elevado número de nulos y algunas filas que contienen mayoría de NAs. Al resto de los NAs les asignamos los valores medios de sus respectivas variables.
+También igualamos el número de filas de ambas tablas para poder unirlas más adelante.
+
+```{r data}
+# Carga de datos.
+df1 <- read_csv("data/energy_dataset.csv")
+df2 <- read_csv("data/weather_features.csv")
+# Arreglo de datos en df1.
+# Eliminación de columnas vacias (100% NAs).
+df1[,c(11,24)] <- NULL
+# Eliminación de columnas con 99,95% nulos.
+df1[,c(4,8,9,10,14,20)] <- NULL
+# Eliminación de filas con mayoría de NAs tomando nota de las fechas/horas eliminadas. 
+df_dates_na <- df1 %>% filter(is.na(df1[,c(2,3,4,5,6,7,8,9,10,11,12,13,14,15)])) %>% .$time
+df1 <- df1 %>%  filter(!is.na(df1[,c(2,3,4,5,6,7,8,9,10,11,12,13,14,15)]))
+# Asignación de la media a valores sueltos de NAs
+df1[6][is.na(df1[6])] =  colMeans(df1[6], na.rm = TRUE)
+df1[7][is.na(df1[7])] =  colMeans(df1[7], na.rm = TRUE)
+df1[8][is.na(df1[8])] =  colMeans(df1[8], na.rm = TRUE)
+df1[14][is.na(df1[14])] =  colMeans(df1[14], na.rm = TRUE)
+df1[19][is.na(df1[19])] =  colMeans(df1[19], na.rm = TRUE)
+knitr::kable(head(df1,5), caption = "Tabla de generación y consumo de energía")
+
+# Arreglo de datos en df2. 
+# Adaptación de tipos de datos.
+df2[, c(2,15,16,17)] <- lapply(df2[, c(2,15,16,17)],as.factor)
+# Borramos las filas eliminadas en df1.
+df2 <- df2[!df2$dt_iso %in% df_dates_na,]
+rm(df_dates_na)
+knitr::kable(head(df2,5), caption = "Tabla de datos climatológicos", digits = 1)
+```
+
+# Análisis de outliers.
+Obtendremos los coeficientes de variación de las variables y algunas gráficas que nos ayudarán a decidir sobre la existencia de outliers y la forma en la que los trataremos.
+
+```{r outliers1}
+# Análisis de outliers en la tabla de energía.
+# Obtención de indicadores estadísticos de las variables ordenados por su "variation_coef".
+prof_df1 <- profiling_num(df1)
+prof_df1 <- as.data.frame(prof_df1) %>% arrange(desc(variation_coef))
+knitr::kable(head(prof_df1,10), caption = "Tabla de indicadores estadísticos de la tabla de energía.", digits = 4)
+
+# Análisis de las 3 variablesque tienen el valor del coeficiente de variación más alto y
+# obtención de sus boxplots.
+df1_m <- df1 %>% select(c(7,13,16)) %>% reshape2::melt() 
+plotar(df1_m,  target= "variable", input = "value", plot_type = "boxplot")
+# Comprobación, también de forma visual para estas variables, de su distribución.
+par(mfrow=c(1,3))
+plot(df1$`generation hydro pumped storage consumption`,col="gray50",alpha=0.3)
+plot(df1$`generation solar`,col="gray50",alpha=0.3)
+plot(df1$`forecast solar day ahead`,col="gray50",alpha=0.3)
+rm(prof_df1,df1_m)
+
+```
+No se aprecian outliers claros en la tabla de energía así que ni eliminamos ni imputamos.
+
+
+```{r outliers2}
+# Análisis de outliers en la tabla de climatología.
+# Obtención de indicadores estadísticos de las variables ordenados por su "variation_coef".
+prof_df2 <- profiling_num(df2)
+prof_df2 <- as.data.frame(prof_df2) %>% arrange(desc(variation_coef))
+knitr::kable(head(prof_df2,10), caption = "Tabla de indicadores estadísticos de la tabla de climatología.", digits = 2)
+# Análisis de los que tienen el valor del coeficiente de variación más alto y 
+# obtención de sus boxplots, en dos grupos, al tener diferentes unidades.
+df2_m_pres <- df2 %>% select(6) %>% reshape2::melt() 
+df2_m_rain <- df2 %>% select(c(10,11,12)) %>% reshape2::melt() 
+
+plotar(df2_m_pres,  target= "variable", input = "value", plot_type = "boxplot")
+plotar(df2_m_rain,  target= "variable", input = "value", plot_type = "boxplot")
+```
+
+De la inspección visual de las variables, de las gráficas de boxplot y del conocimiento de las variables se puede concluir que únicamente hay valores extraños en la variable presión (algunos ceros y valores exageradamente altos para presión atmosférica) ya que las cifras altas de precipitación y nieve están en rangos normales.
+Se eliminan valores de presión por debajo de 918hPa y por encima de 1048hPa.
+
+```{r outliers3}
+df2$pressure[which(df2$pressure < 918)] =  NA
+df2$pressure[which(df2$pressure > 1048)] =  NA
+# Asignación de la media a los NAs generados previamente
+df2[6][is.na(df2[6])] =  colMeans(df2[6], na.rm = TRUE)
+# Tras la adecuación de la variable "pressure" se obtiene lo siguiente.
+df2_m_pres <- df2 %>% select(6) %>% reshape2::melt()
+plotar(df2_m_pres,  target= "variable", input = "value", plot_type = "boxplot")
+rm(prof_df2, df2_m_pres, df2_m_rain)
+```
+Finalmente mostramos cómo quedan las distribuciones de todas las variables (salvo la temporal) con las que vamos a trabajar:
+```{r outliers4}
+# Distribución de los datos por columnas.
+plot_num(df1[,-1], bins = 20)
+plot_num(df2[,-1], bins = 20)
+```
+
+# Análisis Exploratorio de Datos.
+Nuestro objetivo es averiguar si el TSO está realizando una buena predicción del consumo y del precio de la energía y en caso necesario mejorar dicha predicción. Nos vamos a apoyar en algunas gráficas para estudiar los datos, compararlos y examinar sus distribuciones y evolución temporal.
+
+## Comparativa de datos de demanda actual y predicha por el TSO.
+Presentamos un conjunto de cuatro gráficas de comparación entre los datos de demanda energética horaria y la predicción realizada por el TSO:
+
+```{r eda1}
+# Análisis de datos de demanda de energía y precio.
+# Comparativa de demanda energética
+p1 <- df1 %>% ggplot(aes(x=time)) +
+  #geom_line(aes(y= df1$`total load actual`), alpha = 0.3, col = "orangered2") +
+  geom_smooth(aes(y= df1$`total load actual`, col = "Demanda actual"))+
+  #geom_line(aes(y= df1$`total load forecast`), alpha = 0.3, col = "gray50")+
+  geom_smooth(aes(y= df1$`total load forecast`, col = "Demanda predicción"))+
+  scale_colour_manual("", guide = "legend",
+                      values = c("Demanda actual" = "orangered2",
+                                 "Demanda predicción" = "gray50"))+
+  labs(x = "", y = "Energia (MW)", title = "Demanda actual vs predicción demanda TSO") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Comparativa de demanda energética en forma de densidad  
+p2 <- df1 %>%  ggplot() +
+  geom_density(aes(df1$`total load actual`, fill = "Demanda actual") ,alpha = 0.3) +
+  geom_density(aes(df1$`total load forecast`, fill = "Demanda predicción"),alpha = 0.3)+
+  scale_fill_manual("", guide = "legend",
+                    values = c("Demanda actual" = "orangered2",
+                               "Demanda predicción" = "gray50"))+
+  labs(x = "Energia (MW)", title = "Demanda actual vs predicción demanda TSO") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Diferencia entre actual y predicción
+p3 <- df1 %>% mutate(dif = df1$`total load actual`-df1$`total load forecast`) %>% 
+  ggplot()+
+  geom_density(aes(dif), col = "firebrick", size = 1)+
+  geom_vline(aes(xintercept=0),alpha=0.5,linetype="dotdash")+
+  labs(x = "Diferencia demanda actual-predicción", title = "Diferencia demanda actual vs predicción TSO") +
+  theme_bw()
+
+# Promedio semanal de demanda y diferencia entre real y predicha
+df12 <- df1 %>% select(c(1,18,19)) %>% 
+  mutate(dia = wday(time, week_start = getOption("lubridate.week.start", 1))) %>% 
+  group_by(dia) %>% 
+  summarise(media_carga = mean(`total load actual`),
+            media_pred = mean(`total load forecast`)) %>% 
+  ungroup() %>% 
+  mutate(dif = media_carga-media_pred)
+
+# Comparativa promedio semanal de demanda energética
+df12g <- df12 %>% select(everything()) %>% 
+  gather(key="variable", value = "value", -c(dia,dif))
+
+p4 <- df12g %>% ggplot(aes(x=dia, y=value, fill =variable, col =variable)) +
+  geom_line(aes(col = variable))+
+  #geom_col(aes(col = variable),position = "dodge",width = 0.7) +
+  scale_y_continuous(limits = c(26000,31000))+
+  scale_fill_manual("",values = c("orangered2","gray50"))+
+  scale_colour_manual("",values = c("orangered2", "gray50"))+
+  labs(x = "Días semana", y = "Energia (MW)", title = "Demanda actual vs predicción demanda TSO - Semanal") +
+  theme_bw() +
+  theme(legend.position = "bottom")+
+  scale_x_continuous(breaks = c(1,2,3,4,5,6,7),labels = c("L","M","Mi","J","V","S","D"))
+
+rm(df12,df12g)
+
+ggarrange(p1, p2, p3, p4, common.legend = TRUE, legend = "bottom")
+```
+
+Se aprecia que no hay apenas diferencia entre la demanda y la predicción de TSO por lo que nos vamos a centrar en la predicción del precio.
+
+## Comparativa de datos de precio actual y predicho por el TSO.
+Mostramos el mismo tipo de gráficas realizadas anteriormente para la demanda energética, esta vez para evaluar la bondad de la predicción del precio por parte del TSO.
+
+```{r eda2}
+# Comparativa de precios actual y predicho
+p1 <- df1 %>% ggplot(aes(x=time)) +
+  geom_line(aes(y= df1$`price actual`), alpha = 0.3, col = "orangered2") +
+  geom_smooth(aes(y= df1$`price actual`, col = "Precio actual"))+
+  geom_line(aes(y= df1$`price day ahead`), alpha = 0.3, col = "gray50")+
+  geom_smooth(aes(y= df1$`price day ahead`, col = "Precio predicción"))+
+  scale_colour_manual("", guide = "legend",
+                    values = c("Precio actual" = "orangered2",
+                               "Precio predicción" = "gray50"))+
+  labs(x = "", y = "Precio", title = "Precio actual vs predicción TSO") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Comparativa de precios actual y predicho en forma de densidad
+p2 <- df1 %>%  ggplot() +
+  geom_density(aes(df1$`price actual`, fill = "Precio actual") ,alpha = 0.3) +
+  geom_density(aes(df1$`price day ahead`, fill = "Precio predicción"),alpha = 0.3)+
+  scale_fill_manual("", guide = "legend",
+                    values = c("Precio actual" = "orangered2",
+                               "Precio predicción" = "gray50"))+
+  labs(x = "Precio", title = "Precio actual vs predicción TSO") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Diferencia entre precio real y predicho
+p3 <- df1 %>% mutate(dif = df1$`price actual`-df1$`price day ahead`) %>% 
+  ggplot()+
+  geom_density(aes(dif), col = "steelblue", size = 1)+
+  geom_vline(aes(xintercept=0),alpha=0.5,linetype="dotdash")+
+  labs(x = "Diferencia precio actual-predicción", title = "Diferencia precio actual vs predicción TSO") +
+  theme_bw()
+
+# Promedio semanal de demanda y diferencia entre real y predicha
+df13 <- df1 %>% select(c(1,20,21)) %>% 
+  mutate(dia = wday(time, week_start = getOption("lubridate.week.start", 1))) %>% 
+  group_by(dia) %>% 
+  summarise(media_precio = mean(`price actual`),
+            media_precio_pred = mean(`price day ahead`)) %>% 
+  ungroup() %>% 
+  mutate(dif = media_precio-media_precio_pred)
+
+# Comparativa promedio semanal de demanda energética
+df13g <- df13 %>% select(everything()) %>% 
+  gather(key="variable", value = "value", -c(dia,dif))
+
+p4 <- df13g %>% ggplot(aes(x=dia, y=value, fill =variable, col =variable)) +
+  geom_line(aes(col = variable))+
+  #geom_col(aes(col = variable),position = "dodge",width = 0.7) +
+  # scale_y_continuous(limits = c(26000,31000))+
+  scale_fill_manual("",values = c("orangered2","gray50"))+
+  scale_colour_manual("",values = c("orangered2", "gray50"))+
+  labs(x = "Días semana", y = "Precio", title = "Precio actual vs predicción TSO - Semanal") +
+  theme_bw() +
+  theme(legend.position = "bottom")+
+  scale_x_continuous(breaks = c(1,2,3,4,5,6,7),labels = c("L","M","Mi","J","V","S","D"))
+
+rm(df13,df13g)
+
+ggarrange(p1, p2, p3, p4, common.legend = TRUE, legend = "bottom")
+
+```
+
+Se aprecia una clara desviación de la predicción realizada por el TSO. A continuación nos vamos a centrar en tratar de obtener un modelo predictivo válido que mejore al del TSO para los precios de la energía en las siguientes 24 horas a cualquier día de la serie histórica.
+
+# Modelo predictivo para el precio horario de la energía.
+Empezamos por obtener una única tabla unión de las tablas de energía y climatología. Para ello ha sido necesario reducir los valores climatológicos de las 5 ciudades (Madrid, Barcelona, Valencia, Sevilla y Bilbao) al promedio horario.
+
+```{r join}
+# Modificación de la tabla de clima obteniendo las medias de las cinco ciudades con los valores numéricos para cada hora.
+df21 <- df2 %>% select(1,3:13) %>% 
+  group_by(time = dt_iso) %>% 
+  summarise(temp = mean(temp),
+            temp_min = mean(temp_min),
+            temp_max = mean(temp_max),
+            pressure = mean(pressure),
+            humidity = mean(humidity),
+            wind_speed = mean(wind_speed),
+            wind_deg = mean(wind_deg),
+            rain_1h = mean(rain_1h),
+            rain_3h = mean(rain_3h),
+            snow_3h = mean(snow_3h),
+            clouds_all = mean(clouds_all))
+  
+rm(df2)
+# Unión de las 2 tablas
+data <- df1 %>% inner_join(df21,by="time")
+```
+
+## Dependencia entre variables.
+Presentamos la curva suavizada entre cada variable y la variable objetivo, _price actual_, con el objetivo de conocer el patrón que sigue la relación entre ambas (lineal, cuadrática, cúbica,...).
+
+
+```{r modelo1}
+# Análisis de relación entre la variable objetivo y el resto de variables.
+
+p1 <- ggplot(data = data) +geom_smooth(aes(x = time,y = `price actual`))
+p2 <- ggplot(data = data) +geom_smooth(aes(x = `generation biomass`,y = `price actual`))
+p3 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil brown coal/lignite`,y = `price actual`))
+p4 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil gas`,y = `price actual`))
+p5 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil hard coal`,y = `price actual`))
+p6 <- ggplot(data = data) +geom_smooth(aes(x = `generation fossil oil`,y = `price actual`))
+p7 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro pumped storage consumption`,y = `price actual`))
+p8 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro run-of-river and poundage`,y = `price actual`))
+p9 <- ggplot(data = data) +geom_smooth(aes(x = `generation hydro water reservoir`,y = `price actual`))
+p10 <- ggplot(data = data) +geom_smooth(aes(x = `generation nuclear`,y = `price actual`))
+p11 <- ggplot(data = data) +geom_smooth(aes(x = `generation other`,y = `price actual`))
+p12 <- ggplot(data = data) +geom_smooth(aes(x = `generation other renewable`,y = `price actual`))
+p13 <- ggplot(data = data) +geom_smooth(aes(x = `generation solar`,y = `price actual`))
+p14 <- ggplot(data = data) +geom_smooth(aes(x = `generation waste`,y = `price actual`))
+p15 <- ggplot(data = data) +geom_smooth(aes(x = `generation wind onshore`,y = `price actual`))
+p16 <- ggplot(data = data) +geom_smooth(aes(x = `forecast solar day ahead`,y = `price actual`))
+p17 <- ggplot(data = data) +geom_smooth(aes(x = `forecast wind onshore day ahead`,y = `price actual`))
+p18 <- ggplot(data = data) +geom_smooth(aes(x = `total load forecast`,y = `price actual`))
+p19 <- ggplot(data = data) +geom_smooth(aes(x = `total load actual`,y = `price actual`))
+p20 <- ggplot(data = data) +geom_smooth(aes(x = `price day ahead`,y = `price actual`))
+p21 <- ggplot(data = data) +geom_smooth(aes(x = `temp`,y = `price actual`))
+p22 <- ggplot(data = data) +geom_smooth(aes(x = `temp_min`,y = `price actual`))
+p23 <- ggplot(data = data) +geom_smooth(aes(x = `temp_max`,y = `price actual`))
+p24 <- ggplot(data = data) +geom_smooth(aes(x = `pressure`,y = `price actual`))
+p25 <- ggplot(data = data) +geom_smooth(aes(x = `humidity`,y = `price actual`))
+p26 <- ggplot(data = data) +geom_smooth(aes(x = `wind_speed`,y = `price actual`))
+p27 <- ggplot(data = data) +geom_smooth(aes(x = `wind_deg`,y = `price actual`))
+p28 <- ggplot(data = data) +geom_smooth(aes(x = `rain_1h`,y = `price actual`))
+p29 <- ggplot(data = data) +geom_smooth(aes(x = `rain_3h`,y = `price actual`))
+p30 <- ggplot(data = data) +geom_smooth(aes(x = `snow_3h`,y = `price actual`))
+p31 <- ggplot(data = data) +geom_smooth(aes(x = `clouds_all`,y = `price actual`))
+
+p1+p2+p3+p4+p5+p6+p7+p8+p9+p10+p11+p12+p13+p14+p15+p16
+p17+p18+p19+p20+p21+p22+p23+p24+p25+p26+p27+p28+p29+p30+p31
+
+rm(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15,p16,
+   p17,p18,p19,p20,p21,p22,p23,p24,p25,p26,p27,p28,p29,p30,p31)
+```
+
+## Importancia de variables.
+Utilizamos **Random Forest** para ver cuáles son las variables explicativas más importantes.
+
+```{r modelo2}
+set.seed(1234)
+train_forest <- data %>%
+  select(-time) %>% 
+  filter(!is.na(`price actual`))
+random_forest <- randomForest(x= train_forest[,-which(names(train_forest) == "price actual")], y=train_forest$`price actual`, ntree=100,importance=TRUE)
+random_forest <- importance(random_forest)
+random_forest <- data.frame(Variables = row.names(random_forest), MSE = random_forest[,1])
+random_forest <- random_forest[order(random_forest$MSE, decreasing = TRUE),]
+
+ggplot(random_forest[1:30,], aes(x=reorder(Variables, MSE), y=MSE)) + 
+  geom_bar(stat = "identity") + labs(x = "Variable", y= "MSE") + 
+  coord_flip() + 
+  labs(title = "Importacia de variables (MSE explanation)")
+
+rm(random_forest,train_forest)
+```
+## Análisis de multicolinealidad
+Cálculo de la **correlación** entre variables, filtro para aquellas que sean mayor que |0.1| y toma de los nombres de dichas variables.
+
+```{r modelo3}
+df_cor <- data[,-1]
+correlations <- as.matrix(x = sort(cor(df_cor, use="pairwise.complete.obs")[,"price actual"], decreasing = TRUE))
+# Filtrado
+names <- names(which(apply(correlations,1, function(x) abs(x)>0.1))) 
+
+# Ordenación en df para mostrar las variables seleccionadas
+df_cor <- df_cor[, names]
+
+# Creación y representación de la matriz de correlación
+correlations <- cor(df_cor, use="pairwise.complete.obs")
+cor.plot(correlations, numbers=TRUE, xlas = 2, upper= FALSE, main="Correlaciones entre las variables", zlim=c(abs(0.65),abs(1)), colors=TRUE)
+```
+
+Comprobamos qué variables están más correlacionadas para descartar redundancias entre ellas:
+- "generation biomass" con "generation other" (0,66). Cogemos **"generation biomass"**.
+- "generation fossil hard coal" con "price day ahead" (0,67) y con "generation fossil brown coal/lignite" (0,77).Cogemos **"price day ahead"**.
+- "total load actual" con "total load forecast" (0,99). Cogemos **"total load actual"**.
+- "generation wind onshore" con "generation wind onshore day ahead" (0,99). Cogemos **"generation wind onshore".**
+
+## Modelado mediante regresion lineal.
+Antes de proceder a la obtención del modelo obtenemos el valor de RMSE de la predicción del TSO y pondremos las horas como variables _dummy_ para poder incluirlas en el modelo.
+```{r modelo4}
+rm(correlations,df_cor,names)
+
+df <- data[,-c(3,5,11,17,18)]
+knitr::kable(rmse(df$`price actual`,df$`price day ahead`), col.names = "RMSE (TSO)", digits = 2)
+
+# Poner las horas como dummy var para poder emplearlas en el modelo (pasarlas de tipo date a tipo numérico)
+df_train <- df %>% mutate(hora = hour(time)) %>% 
+  fastDummies::dummy_cols(select_columns = "hora") %>%
+  select(-c("time", "hora"))
+
+
+```
+El método que hemos seguido para generar el modelo predictivo mediante regresión lineal se basa en utilizar todos los datos disponibles previos a una jornada concreta (24 h). Para comprobar la validez del modelo hemos creado un bucle que lo calcula para los últimos N días (por ejemplo 30), y obtenemos la media del RMSE de todos los modelos calculados.
+Para la elección de las variables predictoras hemos tenido en cuenta los resultados obtenidos en los tres apartados anteriores.
+
+```{r modelo5}
+# Bucle para calcular la predicción para los últimos n días.
+unPreProc <- function(preProc, data){
+  stopifnot(class(preProc) == "preProcess")
+  stopifnot(class(data) == "data.frame")
+  for(i in names(preProc$mean)){
+    tmp <- data[, i] * preProc$std[[i]] + preProc$mean[[i]]
+    data[, i] <- tmp
+  }
+  return(data)  
+}
+
+datos_test_price_pred <- data.frame()
+datos_test_price_actual <- data.frame()
+rmse_list = c()
+for (i in 10:1) {
+  idx1 = nrow(df)-(i*24)
+  idx2 = idx1 + 1
+  
+  datos_train <- df_train[1:idx1,]
+  datos_test <- df_train[idx2:(idx2+23),]
+  
+  preproc1 <- preProcess(datos_train[,c(1:26)], method=c("center", "scale"))
+  preproc2 <- preProcess(datos_test[,c(1:26)], method=c("center", "scale"))
+  norm1 <- predict(preproc1, datos_train[,c(1:26)])
+  norm2 <- predict(preproc2, datos_test[,c(1:26)])
+  datos_train_norm <- datos_train
+  datos_test_norm <- datos_test
+  datos_train_norm[,1:26] <- norm1[,1:26]
+  datos_test_norm[,1:26] <- norm2[,1:26]
+  
+ 
+  
+  modelo_lm_simple <- train(`price actual` ~ `price day ahead`+
+                              poly(wind_speed,2)+
+                              poly(pressure,2)+
+                              poly(`generation hydro run-of-river and poundage`,2)+
+                              poly(temp_min,3)+
+                              poly(humidity,3)+
+                              `generation wind onshore`+
+                              `generation waste`+
+                              poly(`generation other renewable`,3)+
+                              poly(`generation biomass`,2)+
+                              poly(temp_max,2)+
+                              poly(`forecast solar day ahead`,3)+
+                              poly(`generation hydro water reservoir`,3)+
+                              wind_deg +
+                              `generation solar` +
+                              poly(clouds_all,2)+
+                              poly(`generation fossil oil`,2)+
+                              `generation fossil gas`+
+                              `generation hydro pumped storage consumption`, 
+                            method = "lm", 
+                            data = datos_train_norm)
+  predicciones_lm_simple <- predict(modelo_lm_simple, newdata = datos_test_norm,
+                                    type = "raw")
+  predicciones_lm_norm <- as.data.frame(predicciones_lm_simple)
+  datos_test_pred <- datos_test_norm
+  datos_test_pred[,15] <- predicciones_lm_norm
+  predicciones_lm_unnorm <- unPreProc(preproc2,as.data.frame(datos_test_pred))
+  
+  datos_test_price_pred = rbind(datos_test_price_pred,as.data.frame(predicciones_lm_unnorm$`price actual`))
+  datos_test_price_actual = rbind(datos_test_price_actual,as.data.frame(datos_test$`price actual`))
+  
+  rmse_list[i] <- rmse(datos_test$`price actual`, predicciones_lm_unnorm$`price actual`)
+}
+rm(preproc1,preproc2,norm1,norm2,datos_train_norm,datos_test_norm)
+
+colnames(datos_test_price_actual) <- "price actual"
+colnames(datos_test_price_pred) <- "price day ahead"
+
+# summary(modelo_lm_simple)
+# rmse_list
+knitr::kable(mean(rmse_list), col.names = "RMSE (Modelo)", digits = 2)
+```
+
+Vemos que se mejora notablemente la predicción.
+
+En cuanto a la comparativa entre distribuciones de los valores de precio actual y predicho podemos observar que apenas hay diferencias.
+
+```{r modelo6}
+# Comparativa de precios actual y predicho en forma de densidad
+ggplot() +
+  geom_density(aes(datos_test_price_actual$`price actual`, fill = "Precio actual") ,alpha = 0.3) +
+  geom_density(aes(datos_test_price_pred$`price day ahead`, fill = "Precio predicción"),alpha = 0.3)+
+  scale_fill_manual("", guide = "legend",
+                    values = c("Precio actual" = "orangered2",
+                               "Precio predicción" = "gray50"))+
+  labs(x = "Precio", title = "Precio actual vs predicción TSO") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+En la siguiente gráfica podemos observar la mejoría alcanzada respecto a los datos del TSO.
+```{r modelo7}
+
+# Diferencia entre precio real y predicho
+datos_test_price_actual %>% mutate(dif = datos_test_price_actual$`price actual`- datos_test_price_pred$`price day ahead`) %>% 
+ggplot()+
+  geom_density(aes(dif), col = "steelblue", size = 1)+
+  geom_density(data = df1,aes(df1$`price actual`-df1$`price day ahead`), col = "firebrick", size = 1)+
+  labs(x = "Diferencia precio actual-predicción", title = "Comparativa de predicciones") +
+  theme_bw()
+```
+
+En la siguiente mostramos el modelo y los datos de test para un periodo concreto de 24h.
+```{r modelo8}
+ggplot() +
+  geom_line(aes(x = which(datos_test$`price actual`!= 0), y=datos_test$`price actual`, col = "Precio actual")) +
+  geom_line(aes(x = which(datos_test$`price actual`!= 0), y=predicciones_lm_unnorm$`price actual`, col = "Precio predicción"))+
+  scale_colour_manual("", guide = "legend",
+                    values = c("Precio actual" = "orangered2",
+                               "Precio predicción" = "gray50"))+
+  labs(x = "Horas", title = "Precio actual vs predicción") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Resumen estadístico del RMSE del modelo.
+
+```{r modelo9}
+knitr::kable(t(as.matrix(summary(datos_test$`price actual`-predicciones_lm_unnorm$`price actual`))), caption = "Summary RMSE (Modelo)", digits = 2)
+```
+
+##  Análisis de residuos
+Hacemos comprobaciones de que el modelo sigue una distribución normal.
+```{r residuos, error=FALSE}
+
+# par(mfrow=c(3,1)) 
+plot( modelo_lm_simple$finalModel$residuals ~ modelo_lm_simple$finalModel$fitted.values)
+hist(modelo_lm_simple$finalModel$residuals)
+qqnorm(modelo_lm_simple$finalModel$residuals); qqline(modelo_lm_simple$finalModel$residuals, col = 2,lwd=2,lty=2)
+shapiro.test(modelo_lm_simple$finalModel$residuals[1:5000])
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+

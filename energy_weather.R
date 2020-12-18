@@ -16,10 +16,10 @@ library(tidyr)
 library(ggplot2)
 library(funModeling)
 library(corrplot)
-library(lubridate)
 library(Metrics)
 library(caret)
 library(patchwork)
+library(ModelMetrics)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -344,6 +344,12 @@ df_train <- df %>% mutate(hora = hour(time)) %>%
   fastDummies::dummy_cols(select_columns = "hora") %>%
   select(-c("time", "hora"))
 
+# Separamos train y test, dejando 24 horas de test el final del periodo
+# train <- 0.8*nrow(df)
+datos_train <- df_train[1:(nrow(df)-24),]
+datos_test <- df_train[(nrow(df)-23):nrow(df),]
+
+
 # Separamos en train y test (80-20) con la variable "price actual" como target.
 train <- createDataPartition(y = df_train$`price actual`, p = 0.8, list = FALSE, times = 1)
 datos_train <- df_train[train, ]
@@ -368,6 +374,7 @@ ggplot()+
 modelo_lm <- train(`price actual` ~ ., method = "lm", data = datos_train)
 modelo_lm$resample %>% head(10)
 summary(modelo_lm)
+rmse(df$`price actual`,df$`price day ahead`)
 
 # Eliminamos las variables no significativas para el modelo (p-valor > 0,05)
 datos_train <- datos_train[,-c(6,7,9,23,24,50)]
